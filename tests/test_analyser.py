@@ -124,6 +124,83 @@ class TestCleanQuery:
         assert findings == []
 
 
+# ── SELF JOIN ──────────────────────────────────────────────────────────────────
+
+class TestSelfJoin:
+    def test_detects_self_join(self):
+        q = "SELECT a.id FROM `p.d.users` a JOIN `p.d.users` b ON a.id = b.manager_id"
+        findings = analyse("model", q)
+        assert any(f.rule == "self_join" for f in findings)
+
+    def test_no_self_join_ok(self):
+        q = "SELECT a.id FROM `p.d.users` a JOIN `p.d.orders` b ON a.id = b.user_id"
+        findings = analyse("model", q)
+        assert not any(f.rule == "self_join" for f in findings)
+
+
+# ── REPEATED CTE REFERENCE ───────────────────────────────────────────────────
+
+class TestRepeatedCTEReference:
+    def test_detects_repeated_cte(self):
+        q = """
+        WITH my_cte AS (SELECT id, value FROM `p.d.events`)
+        SELECT * FROM my_cte a JOIN my_cte b ON a.id = b.id
+        """
+        findings = analyse("model", q)
+        assert any(f.rule == "repeated_cte_reference" for f in findings)
+
+    def test_single_cte_usage_ok(self):
+        q = """
+        WITH my_cte AS (SELECT id FROM `p.d.events`)
+        SELECT * FROM my_cte
+        """
+        findings = analyse("model", q)
+        assert not any(f.rule == "repeated_cte_reference" for f in findings)
+
+
+# ── REGEX IN WHERE ───────────────────────────────────────────────────────────
+
+class TestRegexInWhere:
+    def test_detects_regexp_contains(self):
+        q = "SELECT id FROM `p.d.logs` WHERE REGEXP_CONTAINS(message, r'error')"
+        findings = analyse("model", q)
+        assert any(f.rule == "regex_in_where" for f in findings)
+
+    def test_no_regex_ok(self):
+        q = "SELECT id FROM `p.d.logs` WHERE message LIKE '%error%'"
+        findings = analyse("model", q)
+        assert not any(f.rule == "regex_in_where" for f in findings)
+
+
+# ── JOIN ORDER LARGE FIRST ───────────────────────────────────────────────────
+
+class TestJoinOrderLargeFirst:
+    def test_detects_large_table_right_side(self):
+        # 'events' is in the HIGH_RISK_TABLE_PATTERNS
+        q = "SELECT a.id FROM `p.d.users` a JOIN `p.d.events` b ON a.id = b.user_id"
+        findings = analyse("model", q)
+        assert any(f.rule == "join_order_large_first" for f in findings)
+
+    def test_large_table_left_side_ok(self):
+        q = "SELECT a.id FROM `p.d.events` a JOIN `p.d.users` b ON a.user_id = b.id"
+        findings = analyse("model", q)
+        assert not any(f.rule == "join_order_large_first" for f in findings)
+
+
+# ── DYNAMIC PARTITION PRUNING RISK ───────────────────────────────────────────
+
+class TestDynamicPartitionPruningRisk:
+    def test_detects_aggregate_subquery_in_where(self):
+        q = "SELECT id FROM `p.d.events` WHERE event_date >= (SELECT MAX(date) FROM `p.d.runs`)"
+        findings = analyse("model", q)
+        assert any(f.rule == "dynamic_partition_pruning_risk" for f in findings)
+
+    def test_static_where_ok(self):
+        q = "SELECT id FROM `p.d.events` WHERE event_date >= '2024-01-01'"
+        findings = analyse("model", q)
+        assert not any(f.rule == "dynamic_partition_pruning_risk" for f in findings)
+
+
 # ── EXPENSIVE QUERY (multiple issues) ────────────────────────────────────────
 
 class TestExpensiveQuery:

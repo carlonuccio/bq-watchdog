@@ -49,8 +49,9 @@ This reduces scan from 2.1 TB to ~12 GB — saving ~$13 per run.
 1. **dbt compile** — generates `target/compiled/` with final SQL for every model
 2. **Dry run** — BigQuery dry run per model (free, instant, no slots used)
 3. **Static analysis** — AST-based detection of anti-patterns via `sqlglot`
-4. **AI fix** — Claude explains the problem and rewrites the SQL
-5. **PR comment** — structured cost table + fixes posted automatically
+4. **dbt Config Advisor** — Inspects `manifest.json` for suboptimal configurations (e.g. missing clustering)
+5. **AI fix** — Claude explains the problem, suggests config optimizations, and rewrites the SQL
+6. **PR comment** — structured cost table + fixes posted automatically
 
 ---
 
@@ -96,8 +97,10 @@ pip install bq-watchdog
 dbt compile
 watchdog run --project my-gcp-project
 
-# Skip AI suggestions (no Anthropic key needed)
-watchdog run --project my-gcp-project --no-ai
+# Compute monthly cost based on schedule and output to SARIF for GitHub Advanced Security
+watchdog run --project my-gcp-project \
+  --schedule daily \
+  --output sarif > bq-watchdog-results.sarif
 
 # Custom thresholds
 watchdog run --project my-gcp-project \
@@ -115,6 +118,12 @@ watchdog run --project my-gcp-project \
 | `missing_partition_filter` | ⚠️ warn | High-volume table with no WHERE clause |
 | `limit_without_filter` | ⚠️ warn | `LIMIT` without `WHERE` still scans full table |
 | `cross_join` | ❌ block | Cartesian product — almost always unintentional |
+| `self_join` | ⚠️ warn | Table joined to itself — use window functions instead |
+| `repeated_cte_reference` | ⚠️ warn | CTE referenced multiple times — consider materialization |
+| `regex_in_where` | ⚠️ warn | Expensive `REGEXP` operations found in filter |
+| `join_order_large_first` | ℹ️ info | Fact/large table is on the right side of a JOIN |
+| `dynamic_partition_pruning_risk` | ⚠️ warn | Scalar subquery in filter prevents dynamic partition pruning |
+| `missing_clustering_config` | ℹ️ info | Incremental partitioned table missing `cluster_by` config |
 
 ---
 
@@ -128,6 +137,8 @@ watchdog run --project my-gcp-project \
 | `block_threshold` | `5.00` | Cost (USD) per run to block PR |
 | `anthropic_api_key` | optional | Enables AI fix suggestions |
 | `post_pr_comment` | `true` | Post cost breakdown to PR |
+| `schedule` | optional | Compute monthly costs (e.g., `hourly`, `daily`, `weekly`) |
+| `output` | `table` | Output format (`table`, `json`, `sarif`) |
 
 ---
 

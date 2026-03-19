@@ -10,6 +10,7 @@ Usage:
 
 import os
 import sys
+import json
 from datetime import datetime
 from dotenv import load_dotenv
 
@@ -23,6 +24,7 @@ from rich import print as rprint
 from bq_watchdog.core.collector  import collect_compiled_sql
 from bq_watchdog.core.dry_run    import dry_run_all
 from bq_watchdog.core.analyser   import analyse
+from bq_watchdog.core.dbt_advisor import advise
 from bq_watchdog.core.models     import ModelReport, WatchdogResult
 from bq_watchdog.agent.suggester import suggest_fixes_for_flagged
 
@@ -45,8 +47,10 @@ def cli():
 @click.option("--post-pr-comment", is_flag=True,   help="Post comment to GitHub PR")
 @click.option("--pr-number",       default=None,   type=int, help="PR number")
 @click.option("--price-per-tb",    default=6.25,   help="BigQuery on-demand price per TB (USD)")
+@click.option("--schedule",        type=click.Choice(["hourly", "daily", "weekly"]), help="Compute monthly cost based on this schedule")
+@click.option("--output",          type=click.Choice(["table", "json", "sarif"]), default="table", help="Output format")
 def run(project, target, location, warn_threshold,
-        block_threshold, no_ai, post_pr_comment, pr_number):
+        block_threshold, no_ai, post_pr_comment, pr_number, price_per_tb, schedule, output):
     """Run cost analysis on compiled dbt models."""
 
     console.print("\n[bold]🐕 bq-watchdog[/bold]")
@@ -69,12 +73,17 @@ def run(project, target, location, warn_threshold,
     dry_run_map = {r.model: r for r in dry_run_results}
     sql_map     = {m.name: m.sql for m in models}
 
-    # 3. Static analysis
+    # 3. Static analysis & dbt config checks
     finding_map = {}
     for model in models:
+        # SQL analysis
         findings = analyse(model.name, model.sql)
-        if findings:
-            finding_map[model.name] = findings
+        # dbt config analysis
+        config_findings = advise(model.name, target)
+        
+        all_findings = findings + config_findings
+        if all_findings:
+            finding_map[model.name] = all_findings
 
     # 4. Build reports
     reports = []
@@ -101,13 +110,20 @@ def run(project, target, location, warn_threshold,
     # 5. AI suggestions for flagged models
     suggestions = {}
     if not no_ai and any(r.overall_severity != "ok" for r in reports):
-        suggestions = suggest_fixes_for_flagged(reports)
+        suggestions = suggest_fixes_for_flagged(reports, target_dir=target)
         for report in reports:
             if report.name in suggestions:
                 report.suggestion = suggestions[report.name]
 
-    # 6. Print results table
-    _print_results_table(reports)
+    # 6. Print results based on output format
+    if output == "json":
+        sys.stdout.write(result.model_dump_json(indent=2))
+        sys.exit(1 if result.has_blocks else 0)
+    elif output == "sarif":
+        _print_sarif(result)
+        sys.exit(1 if result.has_blocks else 0)
+        
+    _print_results_table(reports, schedule)
 
     # 7. Print suggestions
     for report in reports:
@@ -144,13 +160,18 @@ def run(project, target, location, warn_threshold,
         sys.exit(0)
 
 
-def _print_results_table(reports: list[ModelReport]) -> None:
+def _print_results_table(reports: list[ModelReport], schedule: str = None) -> None:
     table = Table(title="BigQuery Cost Estimate")
     table.add_column("Model",    style="cyan",  no_wrap=True)
     table.add_column("Scan",     justify="right")
     table.add_column("Cost/run", justify="right")
     table.add_column("Issues",   justify="center")
     table.add_column("Status",   justify="center")
+
+    if schedule:
+        table.add_column("Monthly", justify="right")
+
+    multiplier = {"hourly": 730, "daily": 30, "weekly": 4.33}.get(schedule, 1)
 
     for r in sorted(reports, key=lambda x: x.dry_run.cost_usd, reverse=True):
         issue_count = len(r.findings)
@@ -160,16 +181,89 @@ def _print_results_table(reports: list[ModelReport]) -> None:
             "block": "red",
             "error": "red",
         }.get(r.overall_severity, "white")
-
-        table.add_row(
+        
+        row = [
             r.name,
             f"{r.dry_run.gb:.1f} GB" if not r.dry_run.error else "error",
             f"${r.dry_run.cost_usd:.4f}" if not r.dry_run.error else "—",
             str(issue_count) if issue_count else "—",
             f"[{status_color}]{r.dry_run.icon} {r.overall_severity.upper()}[/]",
-        )
+        ]
+        
+        if schedule:
+            monthly = r.dry_run.cost_usd * multiplier
+            row.insert(3, f"${monthly:.2f}" if not r.dry_run.error else "—")
+            
+        table.add_row(*row)
 
     console.print(table)
+
+
+def _print_sarif(result: WatchdogResult) -> None:
+    """Generate and print SARIF format output for GitHub Code Scanning."""
+    sarif = {
+        "$schema": "https://raw.githubusercontent.com/oasis-tcs/sarif-spec/master/Schemata/sarif-schema-2.1.0.json",
+        "version": "2.1.0",
+        "runs": [
+            {
+                "tool": {
+                    "driver": {
+                        "name": "bq-watchdog",
+                        "informationUri": "https://github.com/carlonuccio/bq-watchdog",
+                        "rules": [
+                            {"id": "cross_join", "name": "Cross Join", "shortDescription": {"text": "Cartesian product detected"}},
+                            {"id": "select_star", "name": "Select Star", "shortDescription": {"text": "SELECT * scans all columns"}},
+                            {"id": "limit_without_filter", "name": "Limit w/o Filter", "shortDescription": {"text": "LIMIT without WHERE scans full table"}},
+                            {"id": "missing_partition_filter", "name": "Missing Filter", "shortDescription": {"text": "High volume table with no WHERE clause"}},
+                            {"id": "self_join", "name": "Self Join", "shortDescription": {"text": "Table joined to itself"}},
+                            {"id": "repeated_cte_reference", "name": "Repeated CTE", "shortDescription": {"text": "CTE referenced multiple times"}},
+                            {"id": "regex_in_where", "name": "Regex pattern", "shortDescription": {"text": "Expensive regex found"}},
+                            {"id": "join_order_large_first", "name": "Join Order", "shortDescription": {"text": "Large table not driving the join"}},
+                            {"id": "dynamic_partition_pruning_risk", "name": "Pruning Risk", "shortDescription": {"text": "Dynamic partition pruning risk"}},
+                            {"id": "missing_clustering_config", "name": "Missing Clustering", "shortDescription": {"text": "Add clustering for better partition pruning"}},
+                        ]
+                    }
+                },
+                "results": []
+            }
+        ]
+    }
+
+    for report in result.reports:
+        # Create a result for the dry-run cost if it is warned/blocked
+        if report.dry_run.severity in ("warn", "block"):
+            sarif["runs"][0]["results"].append({
+                "ruleId": "high_cost",
+                "level": "error" if report.dry_run.severity == "block" else "warning",
+                "message": {
+                    "text": f"Estimated cost is ${report.dry_run.cost_usd:.4f}/run ({report.dry_run.gb:.1f} GB scanned)."
+                },
+                "locations": [{
+                    "physicalLocation": {
+                        "artifactLocation": {"uri": f"models/{report.name}.sql"}
+                    }
+                }]
+            })
+            
+        # Create results for AST findings
+        for finding in report.findings:
+            sarif["runs"][0]["results"].append({
+                "ruleId": finding.rule,
+                "level": "error" if finding.severity == "block" else ("warning" if finding.severity == "warn" else "note"),
+                "message": {
+                    "text": finding.description
+                },
+                "locations": [{
+                    "physicalLocation": {
+                        "artifactLocation": {"uri": f"models/{report.name}.sql"}
+                    }
+                }]
+            })
+
+    import sys
+    import json
+    sys.stdout.write(json.dumps(sarif, indent=2))
+
 
 
 def _post_pr_comment(result: WatchdogResult, pr_number: int) -> None:
