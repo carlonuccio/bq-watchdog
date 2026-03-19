@@ -1,0 +1,33 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+dist/
+build/
+.venv/
+venv/
+.env
+
+# dbt
+target/
+dbt_packages/
+logs/
+
+# GCP credentials — never commit
+*.json
+service-account*.json
+gcp-key*.json
+
+# IDE
+.idea/
+.vscode/
+*.swp
+
+# OS
+.DS_Store
+Thumbs.db
+
+# pytest
+.pytest_cache/
+.coverage
+htmlcov/

@@ -1,0 +1,33 @@
+# .github/workflows/bq_cost_check.yml
+# ─────────────────────────────────────
+# Add this to any dbt + BigQuery repo.
+# bq-watchdog will post a cost breakdown on every PR that touches dbt models.
+
+name: BigQuery Cost Check
+
+on:
+  pull_request:
+    paths:
+      - "models/**"
+      - "dbt_project.yml"
+
+jobs:
+  cost-check:
+    runs-on: ubuntu-latest
+
+    permissions:
+      contents:      read
+      id-token:      write    # needed for GCP workload identity
+      pull-requests: write    # needed to post PR comment
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: yourusername/bq-watchdog@v1
+        with:
+          gcp_project:      ${{ vars.GCP_PROJECT_ID }}
+          bq_location:      EU
+          warn_threshold:   "0.50"    # warn if model costs > $0.50/run
+          block_threshold:  "5.00"    # block if model costs > $5.00/run
+          anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+          post_pr_comment:  "true"

@@ -1,0 +1,70 @@
+name: bq-watchdog
+description: AI-powered BigQuery cost guard for dbt projects
+author: Carlo Nuccio
+
+branding:
+  icon: shield
+  color: orange
+
+inputs:
+  gcp_project:
+    description: GCP project ID
+    required: true
+  bq_location:
+    description: BigQuery dataset location (US, EU, etc.)
+    default: EU
+  target_dir:
+    description: dbt target directory
+    default: target
+  warn_threshold:
+    description: Cost per run (USD) to trigger a warning
+    default: "0.50"
+  block_threshold:
+    description: Cost per run (USD) to block the PR
+    default: "5.00"
+  anthropic_api_key:
+    description: Anthropic API key for AI fix suggestions (optional)
+    required: false
+  github_token:
+    description: GitHub token to post PR comment
+    default: ${{ github.token }}
+  post_pr_comment:
+    description: Post cost breakdown as a PR comment
+    default: "true"
+
+runs:
+  using: composite
+  steps:
+    - name: Set up Python
+      uses: actions/setup-python@v5
+      with:
+        python-version: "3.11"
+
+    - name: Install bq-watchdog
+      shell: bash
+      run: pip install bq-watchdog
+
+    - name: Authenticate to GCP
+      uses: google-github-actions/auth@v2
+      with:
+        workload_identity_provider: ${{ env.WIF_PROVIDER }}
+        service_account: ${{ env.WIF_SERVICE_ACCOUNT }}
+
+    - name: Run dbt compile
+      shell: bash
+      run: dbt compile --target ${{ inputs.target_dir }}
+
+    - name: Run bq-watchdog
+      shell: bash
+      env:
+        ANTHROPIC_API_KEY: ${{ inputs.anthropic_api_key }}
+        GITHUB_TOKEN:      ${{ inputs.github_token }}
+      run: |
+        watchdog run \
+          --project    ${{ inputs.gcp_project }} \
+          --target     ${{ inputs.target_dir }} \
+          --location   ${{ inputs.bq_location }} \
+          --warn-threshold  ${{ inputs.warn_threshold }} \
+          --block-threshold ${{ inputs.block_threshold }} \
+          ${{ inputs.post_pr_comment == 'true' && '--post-pr-comment' || '' }} \
+          --pr-number  ${{ github.event.pull_request.number }}
