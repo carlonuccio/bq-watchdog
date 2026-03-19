@@ -9,7 +9,8 @@ Returns markdown formatted for a GitHub PR comment.
 import anthropic
 from bq_watchdog.core.models import Finding, DryRunResult
 
-client = anthropic.Anthropic()
+def _get_client():
+    return anthropic.Anthropic()
 
 SYSTEM = """You are a BigQuery cost optimisation expert reviewing a dbt model in a GitHub PR.
 
@@ -45,7 +46,7 @@ def suggest_fix(
     # Truncate very long SQL for the prompt
     sql_for_prompt = sql if len(sql) < 3000 else sql[:3000] + "\n-- [truncated]"
 
-    response = client.messages.create(
+    response = _get_client().messages.create(
         model="claude-sonnet-4-6",
         max_tokens=800,
         system=SYSTEM,
