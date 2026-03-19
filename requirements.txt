@@ -4,6 +4,7 @@ sqlglot>=25.0
 pydantic>=2.5
 click>=8.1
 rich>=13.7
+python-dotenv>=1.2.2
 
 # AI
 anthropic>=0.40

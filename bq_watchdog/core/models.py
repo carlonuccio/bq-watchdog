@@ -6,8 +6,9 @@ Pydantic models for bq-watchdog findings and results.
 
 from pydantic import BaseModel, computed_field, ConfigDict
 from typing import Literal, Optional
+import os
 
-BQ_PRICE_PER_TB = 6.25   # USD per TB, on-demand pricing 2025
+BQ_PRICE_PER_TB = float(os.getenv("BQ_PRICE_PER_TB", "6.25"))   # USD per TB, on-demand pricing 2025
 
 
 class Finding(BaseModel):

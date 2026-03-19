@@ -11,6 +11,9 @@ Usage:
 import os
 import sys
 from datetime import datetime
+from dotenv import load_dotenv
+
+load_dotenv()
 
 import click
 from rich.console import Console
@@ -41,6 +44,7 @@ def cli():
 @click.option("--no-ai",           is_flag=True,   help="Skip AI suggestions")
 @click.option("--post-pr-comment", is_flag=True,   help="Post comment to GitHub PR")
 @click.option("--pr-number",       default=None,   type=int, help="PR number")
+@click.option("--price-per-tb",    default=6.25,   help="BigQuery on-demand price per TB (USD)")
 def run(project, target, location, warn_threshold,
         block_threshold, no_ai, post_pr_comment, pr_number):
     """Run cost analysis on compiled dbt models."""
